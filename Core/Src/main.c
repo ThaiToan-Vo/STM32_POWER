@@ -51,6 +51,11 @@ volatile uint32_t ring_overwrite = 0;
 uint16_t s;			// variable for data
 volatile uint8_t flag = 1;	// variable for preload tx SPI first
 uint8_t itr =0;
+
+
+volatile uint8_t tx_index = 0;
+volatile uint8_t frame_active = 0;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -67,8 +72,6 @@ ADC_HandleTypeDef hadc;
 DMA_HandleTypeDef hdma_adc;
 
 SPI_HandleTypeDef hspi1;
-DMA_HandleTypeDef hdma_spi1_tx;
-DMA_HandleTypeDef hdma_spi1_rx;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
@@ -103,6 +106,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   	  HAL_ADC_Start_DMA(&hadc, (uint32_t*)adc_dma_buf, 1);
   	  HAL_TIM_Base_Start(&htim1);
   }
+
 }
 
 // ===== Ring buffer for data ===== //
@@ -144,15 +148,10 @@ static inline bool ring_pop(uint16_t *out)
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
 	ring_push(adc_dma_buf[0]);
+
 	// preload first sample for SPI
-	if(flag == 1)
-	{
-		flag = 0 ;
-		ring_pop(&s);
-		tx[0] = (uint8_t)(s & 0xFF);
-		tx[1] = (uint8_t)(s >> 8);
-		HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
-	}
+	hspi1.Instance->DR = tx[0];
+	tx_index = 1;
 
 	// interrupt for data ready
 	itr++;
@@ -167,24 +166,24 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 1);
 	HAL_TIM_Base_Stop_IT(&htim3);
 }
-// ===== SPI callback after transmitting ===== //
-void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
-{
-
-	 if (ring_pop(&s))
-	 {
-		 tx[0] = (uint8_t)(s & 0xFF);
-		 tx[1] = (uint8_t)(s >> 8);
-	 }
-	 else
-	 {
-		 tx[0] = 0;
-		 tx[1] = 0;
-	 }
-	 // preload for next transmit
-	 HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
-
-}
+//// ===== SPI callback after transmitting ===== //
+//void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+//{
+//
+//	 if (ring_pop(&s))
+//	 {
+//		 tx[0] = (uint8_t)(s & 0xFF);
+//		 tx[1] = (uint8_t)(s >> 8);
+//	 }
+//	 else
+//	 {
+//		 tx[0] = 0;
+//		 tx[1] = 0;
+//	 }
+//	 // preload for next transmit
+//	 HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
+//
+//}
 
 
 
@@ -221,6 +220,12 @@ int main(void)
   MX_DMA_Init();
   MX_ADC_Init();
   MX_SPI1_Init();
+// ===================================== //
+  __HAL_SPI_ENABLE(&hspi1);
+
+  SET_BIT(hspi1.Instance->CR2, SPI_CR2_RXNEIE);
+  SET_BIT(hspi1.Instance->CR2, SPI_CR2_TXEIE);
+// ===================================== //
   MX_TIM1_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
@@ -477,9 +482,6 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel1_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
-  /* DMA1_Channel2_3_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel2_3_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel2_3_IRQn);
 
 }
 
