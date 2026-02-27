@@ -52,10 +52,7 @@ uint16_t s;			// variable for data
 volatile uint8_t flag = 1;	// variable for preload tx SPI first
 uint8_t itr =0;
 
-volatile uint16_t next_sample = 0;
-volatile uint8_t spi_armed = 0;
 
-volatile uint8_t data_ready_pending = 0;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -149,8 +146,21 @@ static inline bool ring_pop(uint16_t *out)
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
 	ring_push(adc_dma_buf[0]);
+	// preload first sample for SPI
+	if(flag == 1)
+	{
+		flag = 0 ;
+		ring_pop(&s);
+		tx[0] = (uint8_t)(s & 0xFF);
+		tx[1] = (uint8_t)(s >> 8);
+		HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
+	}
 
-	data_ready_pending = 1;
+	// interrupt for data ready
+	itr++;
+
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
+	HAL_TIM_Base_Start_IT(&htim3);
 
 }
 
@@ -173,18 +183,8 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 		 tx[0] = 0;
 		 tx[1] = 0;
 	 }
-	 // arm lại DMA ngay lập tức
-	     HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
-	     spi_armed = 1;
-
-	     // nếu có dữ liệu mới và SPI đã sẵn sàng → báo DataReady
-	     if (data_ready_pending)
-	     {
-	         data_ready_pending = 0;
-
-	         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
-	         HAL_TIM_Base_Start_IT(&htim3);
-	     }
+	 // preload for next transmit
+	 HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
 
 }
 
@@ -227,12 +227,6 @@ int main(void)
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
-  // preload 0 frame đầu tiên
-  tx[0] = 0;
-  tx[1] = 0;
-
-  HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
-  spi_armed = 1;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -325,13 +319,6 @@ static void MX_ADC_Init(void)
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
   sConfig.SamplingTime = ADC_SAMPLETIME_13CYCLES_5;
-  if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure for the selected ADC regular channel to be converted.
-  */
-  sConfig.Channel = ADC_CHANNEL_3;
   if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
   {
     Error_Handler();
