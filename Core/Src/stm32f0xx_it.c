@@ -27,7 +27,8 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN TD */
-
+//extern volatile uint8_t tx_index;
+//extern uint8_t tx[100];
 /* USER CODE END TD */
 
 /* Private define ------------------------------------------------------------*/
@@ -57,8 +58,8 @@
 
 /* External variables --------------------------------------------------------*/
 extern DMA_HandleTypeDef hdma_adc;
-extern DMA_HandleTypeDef hdma_spi1_tx;
 extern DMA_HandleTypeDef hdma_spi1_rx;
+extern DMA_HandleTypeDef hdma_spi1_tx;
 extern SPI_HandleTypeDef hspi1;
 extern TIM_HandleTypeDef htim3;
 /* USER CODE BEGIN EV */
@@ -212,7 +213,20 @@ void SPI1_IRQHandler(void)
   /* USER CODE END SPI1_IRQn 0 */
   HAL_SPI_IRQHandler(&hspi1);
   /* USER CODE BEGIN SPI1_IRQn 1 */
-
+//  // đ�?c để tránh OVR
+//  if (__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_RXNE))
+//  {
+//      volatile uint8_t dummy = hspi1.Instance->DR;
+//  }
+//
+//  // nạp byte 2
+//  if (__HAL_SPI_GET_FLAG(&hspi1, SPI_FLAG_TXE))
+//  {
+//      if (tx_index < 2)
+//      {
+//          hspi1.Instance->DR = tx[tx_index++];
+//      }
+//  }
   /* USER CODE END SPI1_IRQn 1 */
 }
 
