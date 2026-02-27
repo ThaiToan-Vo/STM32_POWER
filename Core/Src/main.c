@@ -52,10 +52,10 @@ uint16_t s;			// variable for data
 volatile uint8_t flag = 1;	// variable for preload tx SPI first
 uint8_t itr =0;
 
+volatile uint16_t next_sample = 0;
+volatile uint8_t spi_armed = 0;
 
-volatile uint8_t tx_index = 0;
-volatile uint8_t frame_active = 0;
-
+volatile uint8_t data_ready_pending = 0;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -72,6 +72,8 @@ ADC_HandleTypeDef hadc;
 DMA_HandleTypeDef hdma_adc;
 
 SPI_HandleTypeDef hspi1;
+DMA_HandleTypeDef hdma_spi1_rx;
+DMA_HandleTypeDef hdma_spi1_tx;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
@@ -106,7 +108,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   	  HAL_ADC_Start_DMA(&hadc, (uint32_t*)adc_dma_buf, 1);
   	  HAL_TIM_Base_Start(&htim1);
   }
-
 }
 
 // ===== Ring buffer for data ===== //
@@ -149,15 +150,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
 	ring_push(adc_dma_buf[0]);
 
-	// preload first sample for SPI
-	hspi1.Instance->DR = tx[0];
-	tx_index = 1;
-
-	// interrupt for data ready
-	itr++;
-
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
-	HAL_TIM_Base_Start_IT(&htim3);
+	data_ready_pending = 1;
 
 }
 
@@ -166,24 +159,34 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 1);
 	HAL_TIM_Base_Stop_IT(&htim3);
 }
-//// ===== SPI callback after transmitting ===== //
-//void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
-//{
-//
-//	 if (ring_pop(&s))
-//	 {
-//		 tx[0] = (uint8_t)(s & 0xFF);
-//		 tx[1] = (uint8_t)(s >> 8);
-//	 }
-//	 else
-//	 {
-//		 tx[0] = 0;
-//		 tx[1] = 0;
-//	 }
-//	 // preload for next transmit
-//	 HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
-//
-//}
+// ===== SPI callback after transmitting ===== //
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+
+	 if (ring_pop(&s))
+	 {
+		 tx[0] = (uint8_t)(s & 0xFF);
+		 tx[1] = (uint8_t)(s >> 8);
+	 }
+	 else
+	 {
+		 tx[0] = 0;
+		 tx[1] = 0;
+	 }
+	 // arm lại DMA ngay lập tức
+	     HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
+	     spi_armed = 1;
+
+	     // nếu có dữ liệu mới và SPI đã sẵn sàng → báo DataReady
+	     if (data_ready_pending)
+	     {
+	         data_ready_pending = 0;
+
+	         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
+	         HAL_TIM_Base_Start_IT(&htim3);
+	     }
+
+}
 
 
 
@@ -220,16 +223,16 @@ int main(void)
   MX_DMA_Init();
   MX_ADC_Init();
   MX_SPI1_Init();
-// ===================================== //
-  __HAL_SPI_ENABLE(&hspi1);
-
-  SET_BIT(hspi1.Instance->CR2, SPI_CR2_RXNEIE);
-  SET_BIT(hspi1.Instance->CR2, SPI_CR2_TXEIE);
-// ===================================== //
   MX_TIM1_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
+  // preload 0 frame đầu tiên
+  tx[0] = 0;
+  tx[1] = 0;
+
+  HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
+  spi_armed = 1;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -482,6 +485,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel1_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  /* DMA1_Channel2_3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel2_3_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel2_3_IRQn);
 
 }
 
@@ -512,12 +518,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PA9 PA10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_10;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
