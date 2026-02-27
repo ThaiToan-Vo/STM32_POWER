@@ -154,13 +154,15 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 		tx[0] = (uint8_t)(s & 0xFF);
 		tx[1] = (uint8_t)(s >> 8);
 		HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
+
+		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
+		HAL_TIM_Base_Start_IT(&htim3);
 	}
 
 	// interrupt for data ready
 	itr++;
 
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
-	HAL_TIM_Base_Start_IT(&htim3);
+
 
 }
 
@@ -185,6 +187,9 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 	 }
 	 // preload for next transmit
 	 HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
+
+	 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
+	 HAL_TIM_Base_Start_IT(&htim3);
 
 }
 
