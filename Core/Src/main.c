@@ -51,8 +51,8 @@ volatile uint32_t ring_overwrite = 0;
 uint16_t s;			// variable for data
 volatile uint8_t flag = 1;	// variable for preload tx SPI first
 uint8_t itr =0;
-
-
+uint8_t yes=0;
+uint8_t no=0;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -147,9 +147,8 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
 	ring_push(adc_dma_buf[0]);
 	// preload first sample for SPI
-	if(flag == 1)
-	{
-		flag = 0 ;
+	if (HAL_SPI_GetState(&hspi1) == HAL_SPI_STATE_READY) {
+	    // Thực hiện nạp DMA
 		ring_pop(&s);
 		tx[0] = (uint8_t)(s & 0xFF);
 		tx[1] = (uint8_t)(s >> 8);
@@ -158,6 +157,17 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
 		HAL_TIM_Base_Start_IT(&htim3);
 	}
+//	if(flag == 1)
+//	{
+//		flag = 0 ;
+//		ring_pop(&s);
+//		tx[0] = (uint8_t)(s & 0xFF);
+//		tx[1] = (uint8_t)(s >> 8);
+//		HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
+//
+//		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
+//		HAL_TIM_Base_Start_IT(&htim3);
+//	}
 
 	// interrupt for data ready
 	itr++;
@@ -175,21 +185,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 {
 
-	 if (ring_pop(&s))
-	 {
-		 tx[0] = (uint8_t)(s & 0xFF);
-		 tx[1] = (uint8_t)(s >> 8);
-	 }
-	 else
-	 {
-		 tx[0] = 0;
-		 tx[1] = 0;
-	 }
-	 // preload for next transmit
-	 HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
-
-	 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
-	 HAL_TIM_Base_Start_IT(&htim3);
+//	 if (ring_pop(&s))
+//	 {
+//		 tx[0] = (uint8_t)(s & 0xFF);
+//		 tx[1] = (uint8_t)(s >> 8);
+//		 yes++;
+//	 }
+//	 else
+//	 {
+//		 tx[0] = 0;
+//		 tx[1] = 0;
+//		 no++;
+//	 }
+//	 // preload for next transmit
+//	 HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
+//
+//	 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
+//	 HAL_TIM_Base_Start_IT(&htim3);
 
 }
 
