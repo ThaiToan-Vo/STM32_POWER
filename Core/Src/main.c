@@ -30,29 +30,19 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-#define RING_SIZE        640
-#define FRAME_SAMPLES   50
-#define FRAME_BYTES     (1 + FRAME_SAMPLES * 2)
-uint16_t adc_dma_buf[10];
-/* ring buffer ADC */
-volatile uint16_t ring[RING_SIZE];
-volatile uint16_t head = 0;
-volatile uint16_t tail = 0;
-volatile uint16_t ring_count = 0;
 
+#define FRAME_SAMPLES   50  // 50 mẫu tương ứng với tần số lấy mẫu 2.5kHz
+#define SPI_WORDS 51       // 1 Header + 50 Samples
 
-/* SPI buffers (8-bit) */
+uint16_t adc_dma_buf[100];
 
-uint8_t rx[FRAME_BYTES];
-uint8_t tx[FRAME_BYTES];
+/* SPI buffers (16-bit) */
 
-volatile uint32_t ring_overwrite = 0;
+uint16_t spi_rx_frame[51];
+uint16_t spi_tx_frame[51];
 
-uint16_t s;			// variable for data
-volatile uint8_t flag = 1;	// variable for preload tx SPI first
-uint8_t itr =0;
-
-
+uint16_t overflow_count = 0;
+uint16_t half = 0;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -73,7 +63,6 @@ DMA_HandleTypeDef hdma_spi1_rx;
 DMA_HandleTypeDef hdma_spi1_tx;
 
 TIM_HandleTypeDef htim1;
-TIM_HandleTypeDef htim3;
 
 /* USER CODE BEGIN PV */
 
@@ -86,7 +75,6 @@ static void MX_DMA_Init(void);
 static void MX_ADC_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM1_Init(void);
-static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -101,90 +89,62 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   UNUSED(GPIO_Pin);
   if(GPIO_Pin == GPIO_PIN_0)
   {
-  	  HAL_ADCEx_Calibration_Start(&hadc);
-  	  HAL_ADC_Start_DMA(&hadc, (uint32_t*)adc_dma_buf, 1);
+  	  HAL_ADC_Start_DMA(&hadc, (uint32_t*)adc_dma_buf, 100);
+  	  /*size = 50 , circular mode
+  	  khi adc dma hoàn tất 0-49 g�?i halfcallback
+  	  khi adc dma hoàn tất 50-99 g�?i cmpltcallback
+  	  dùng double buffer lưu 50 mẫu đầu trong buffer A
+  	  lưu 50 mẫu tiếp theo trong buffer B để tránh việc ghi đè */
+
   	  HAL_TIM_Base_Start(&htim1);
   }
 }
 
-// ===== Ring buffer for data ===== //
-static inline void ring_push(uint16_t sample)
+// hàm chuẩn bị và gửi dữ liệu
+void prepare_and_send (uint16_t *value)
 {
-    uint16_t next = head + 1;
-    if (next >= RING_SIZE) next = 0;
-
-    ring[head] = sample;
-    head = next;
-
-    if (ring_count < RING_SIZE)
-    {
-        ring_count++;
-    }
-    else
-    {
-        tail++;
-        if (tail >= RING_SIZE)
-        {
-        	tail = 0;
-        	ring_overwrite++;
-        }
-    }
-}
-
-static inline bool ring_pop(uint16_t *out)
-{
-    if (ring_count == 0) return false;
-    *out = ring[tail];
-    tail++;
-    if (tail >= RING_SIZE) tail = 0;
-    ring_count--;
-    return true;
-}
-
-
-// ===== ADC callback every sample ===== //
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-{
-	ring_push(adc_dma_buf[0]);
-	// preload first sample for SPI
-	if(flag == 1)
+	if (hspi1.State != HAL_SPI_STATE_READY)
 	{
-		flag = 0 ;
-		ring_pop(&s);
-		tx[0] = (uint8_t)(s & 0xFF);
-		tx[1] = (uint8_t)(s >> 8);
-		HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
+		// Nếu Busy, nghĩa là ESP32 chưa đ�?c xong gói cũ
+		// Ta b�? qua gói này để bảo vệ nhịp độ lấy mẫu ADC
+		overflow_count++;
+		return;
+	}
+	spi_tx_frame[0] = 0xAAAA; // Header nhận diện gói 16-bit
+
+	// copy 50 mẫu
+	memcpy(&spi_tx_frame[1], value , FRAME_SAMPLES * 2);
+
+	// Gửi 51 Word qua SPI DMA , spi_tx_frame[0] để làm header
+	if(HAL_SPI_TransmitReceive_DMA(&hspi1, (uint8_t*)spi_tx_frame, (uint8_t*)spi_rx_frame, SPI_WORDS) == HAL_OK)
+	{
+		// Báo data ready cho ESP32
+		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
 	}
 
-	// interrupt for data ready
-	itr++;
-
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 0);
-	HAL_TIM_Base_Start_IT(&htim3);
-
 }
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+
+// gửi đi 50 mẫu ở đầu
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
 {
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 1);
-	HAL_TIM_Base_Stop_IT(&htim3);
+	half++;
+	prepare_and_send(&adc_dma_buf[0]);
 }
+
+
+// ===== ADC callback for sample 50-99 (buffer B) ===== //
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+	prepare_and_send(&adc_dma_buf[50]);
+
+}
+
+
 // ===== SPI callback after transmitting ===== //
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 {
-
-	 if (ring_pop(&s))
-	 {
-		 tx[0] = (uint8_t)(s & 0xFF);
-		 tx[1] = (uint8_t)(s >> 8);
-	 }
-	 else
-	 {
-		 tx[0] = 0;
-		 tx[1] = 0;
-	 }
-	 // preload for next transmit
-	 HAL_SPI_TransmitReceive_DMA(&hspi1, tx, rx, 2);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, 1); // kéo chân dataready lên 1 chờ có đủ 50 mẫu tiếp theo
 
 }
 
@@ -224,7 +184,6 @@ int main(void)
   MX_ADC_Init();
   MX_SPI1_Init();
   MX_TIM1_Init();
-  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -254,11 +213,15 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI14|RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_HSI14;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSI14State = RCC_HSI14_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.HSI14CalibrationValue = 16;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL12;
+  RCC_OscInitStruct.PLL.PREDIV = RCC_PREDIV_DIV1;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -267,11 +230,11 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSE;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -348,7 +311,7 @@ static void MX_SPI1_Init(void)
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_SLAVE;
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.DataSize = SPI_DATASIZE_16BIT;
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_HARD_INPUT;
@@ -387,9 +350,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 99;
+  htim1.Init.Prescaler = 47;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 31;
+  htim1.Init.Period = 399;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -411,51 +374,6 @@ static void MX_TIM1_Init(void)
   /* USER CODE BEGIN TIM1_Init 2 */
 
   /* USER CODE END TIM1_Init 2 */
-
-}
-
-/**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM3_Init(void)
-{
-
-  /* USER CODE BEGIN TIM3_Init 0 */
-
-  /* USER CODE END TIM3_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-
-  /* USER CODE BEGIN TIM3_Init 1 */
-
-  /* USER CODE END TIM3_Init 1 */
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 9;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 3;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM3_Init 2 */
-
-  /* USER CODE END TIM3_Init 2 */
 
 }
 
